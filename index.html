@@ -67,6 +67,10 @@
     .stack { display:grid; gap:12px; }
     .filters { display:flex; gap:6px; flex-wrap:wrap; }
     .filters button.on { background:var(--green); color:#fff; }
+    .tag.play { background:#dce8fb; color:#1d4fa8; }
+    .game.st-waiting { background:#f1f8f4; border-color:#b9dcc9; }
+    .game.st-playing { background:#f2f6fd; border-color:#b7cdf3; }
+    .game.st-finished { opacity:.6; }
   </style>
 </head>
 
@@ -106,13 +110,9 @@
 
   <main class="hidden" id="appView">
     <section class="card">
-      <h2>경기 만들기</h2>
+      <h2>방 만들기</h2>
       <form id="gameForm" class="stack">
         <div class="row">
-          <div><label for="gDate">날짜</label><input type="date" id="gDate" required></div>
-          <div><label for="gTime">시간</label><input type="time" id="gTime" required></div>
-          <div><label for="gCourt">코트</label>
-            <select id="gCourt"></select></div>
           <div><label for="gLevel">급수 제한</label>
             <select id="gLevel"><option value="">제한 없음</option></select></div>
         </div>
@@ -120,16 +120,18 @@
           <label style="display:flex;align-items:center;gap:6px;margin:0 auto 0 0;font-size:13px;color:var(--ink)">
             <input type="checkbox" id="gJoin" checked style="width:auto"> 나도 참가
           </label>
-          <button type="submit">경기 만들기</button>
+          <button type="submit">방 만들기</button>
         </div>
         <div class="err" id="gameErr"></div>
       </form>
     </section>
 
     <section class="card">
-      <h2>경기 목록 <span class="filters" id="filters">
+      <h2>방 목록 <span class="filters" id="filters">
         <button type="button" class="ghost on" data-f="all">전체</button>
         <button type="button" class="ghost" data-f="open">모집중</button>
+        <button type="button" class="ghost" data-f="waiting">경기대기</button>
+        <button type="button" class="ghost" data-f="playing">경기중</button>
         <button type="button" class="ghost" data-f="mine">내 경기</button>
       </span></h2>
       <div class="games" id="games"></div>
@@ -152,8 +154,10 @@
     var SUPABASE_KEY = 'sb_publishable_07_Wd4wErgY6L1SOqFegxA_XPdS_Wg8';
 
     var LEVELS = ['S', 'A', 'B', 'C', 'D', '초심'];
-    var COURTS = ['1번 코트', '2번 코트', '3번 코트', '4번 코트'];
     var ME_KEY = 'bm.me';
+    // 상태 표시 순서: 경기중 → 경기대기 → 모집중 → 종료
+    var ORDER = { playing: 0, waiting: 1, open: 2, finished: 3 };
+    var DONE_SHOW_MS = 60 * 60e3; // 종료된 경기는 1시간 동안만 목록에 표시
 
     var $ = function (id) { return document.getElementById(id); };
 
@@ -183,12 +187,9 @@
       return '<span class="badge lv-' + lv + '">' + esc(lv) + '</span>';
     }
     function pad(n) { return (n < 10 ? '0' : '') + n; }
-    function dateStr(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
-    function todayStr() { return dateStr(new Date()); }
-    function fmtDate(s) {
-      var p = s.split('-');
-      var d = new Date(+p[0], +p[1] - 1, +p[2]);
-      return (+p[1]) + '/' + (+p[2]) + ' (' + '일월화수목금토'[d.getDay()] + ')';
+    function hm(iso) { var d = new Date(iso); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+    function mins(fromIso, toIso) {
+      return Math.max(0, Math.round(((toIso ? new Date(toIso) : new Date()) - new Date(fromIso)) / 60e3));
     }
     function levelOf(name) { return state.players[name] ? state.players[name].level : '초심'; }
     // 급수 제한: 해당 급수 이상만 참가 (S가 가장 높음)
@@ -197,10 +198,12 @@
       return LEVELS.indexOf(level) <= LEVELS.indexOf(game.level);
     }
     function filled(g) { return g.slots.filter(Boolean).length; }
+    function isMember(g, name) { return g.owner === name || g.slots.indexOf(name) >= 0; }
     function fromRow(r) {
       return {
-        id: r.id, date: r.play_date, time: String(r.play_time).slice(0, 5), court: r.court,
-        level: r.level || '', owner: r.owner, slots: [r.s0, r.s1, r.s2, r.s3]
+        id: r.id, no: r.room_no, level: r.level || '', owner: r.owner,
+        status: r.status || 'open', startedAt: r.started_at, endedAt: r.ended_at,
+        createdAt: r.created_at, slots: [r.s0, r.s1, r.s2, r.s3]
       };
     }
 
@@ -212,36 +215,37 @@
       clearTimeout(statusTimer);
       if (msg && !sticky) statusTimer = setTimeout(function () { el.classList.add('hidden'); }, 4000);
     }
+    var SCHEMA_MSG = 'DB 구조가 최신이 아니에요. supabase/schema.sql 을 Supabase SQL Editor에서 다시 실행해 주세요.';
     function dbError(err, what) {
       console.error(what, err);
-      if (err && err.code === 'PGRST205') {
-        showStatus('DB 테이블이 아직 없어요. supabase/schema.sql 을 Supabase SQL Editor에서 실행해 주세요.', true);
-      } else {
-        var msg = (err && err.message) || '알 수 없는 오류';
-        if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
-          msg = '서버에 연결하지 못했어요. 인터넷 연결을 확인하고, 광고 차단기·보안 프로그램·회사/학교 네트워크가 막고 있지 않은지 확인해 주세요.';
-        }
-        showStatus(what + ' 실패: ' + msg);
+      var code = err && err.code;
+      if (code === 'PGRST205' || code === 'PGRST202' || code === '42703' || code === 'PGRST204') {
+        return showStatus(SCHEMA_MSG, true);
       }
+      var msg = (err && err.message) || '알 수 없는 오류';
+      if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
+        msg = '서버에 연결하지 못했어요. 인터넷 연결을 확인하고, 광고 차단기·보안 프로그램·회사/학교 네트워크가 막고 있지 않은지 확인해 주세요.';
+      }
+      showStatus(what + ' 실패: ' + msg);
     }
 
     // ---------- DB ----------
     function fetchAll() {
-      var y = new Date(); y.setDate(y.getDate() - 1);
+      var since = new Date(Date.now() - DONE_SHOW_MS).toISOString();
       return Promise.all([
-        db.from('games').select('*').gte('play_date', dateStr(y))
-          .order('play_date').order('play_time').order('court'),
+        db.from('games').select('*').or('status.neq.finished,ended_at.gte.' + since).order('created_at'),
         db.from('player_stats').select('*')
       ]).then(function (res) {
         if (res[0].error) return dbError(res[0].error, '경기 불러오기');
         if (res[1].error) return dbError(res[1].error, '참가자 불러오기');
+        if (res[0].data.length && !('status' in res[0].data[0])) showStatus(SCHEMA_MSG, true);
+        else if ($('status').textContent === SCHEMA_MSG) showStatus('');
         state.games = res[0].data.map(fromRow);
         state.players = {};
         res[1].data.forEach(function (p) {
           state.players[p['이름']] = { name: p['이름'], level: p['급수'], gender: p['성별'], month: p['월_참여횟수'], total: p['총_참여횟수'] };
         });
         state.loaded = true;
-        if ($('status').textContent.indexOf('DB 테이블') === 0) showStatus('');
         if (state.me) render();
       });
     }
@@ -259,7 +263,7 @@
     // DB 함수 호출. 함수가 아직 없으면(예전 스키마) 기존 방식으로 대체
     function rpc(fn, args, fallback) {
       return db.rpc(fn, args).then(function (r) {
-        if (r.error && r.error.code === 'PGRST202') return fallback();
+        if (r.error && r.error.code === 'PGRST202' && fallback) return fallback();
         return r;
       });
     }
@@ -274,9 +278,6 @@
       $('gLevel').insertAdjacentHTML('beforeend', '<option value="' + lv + '">' + lv + ' 이상</option>');
     });
     $('loginLevel').value = 'C';
-    COURTS.forEach(function (c) { $('gCourt').insertAdjacentHTML('beforeend', '<option>' + c + '</option>'); });
-    $('gDate').value = todayStr();
-    $('gDate').min = todayStr();
 
     // ---------- 로그인 ----------
     $('loginForm').addEventListener('submit', function (e) {
@@ -306,37 +307,36 @@
       render();
     });
 
-    // ---------- 경기 만들기 ----------
+    // ---------- 방 만들기 ----------
     $('gameForm').addEventListener('submit', function (e) {
       e.preventDefault();
-      var form = this;
-      var date = $('gDate').value, time = $('gTime').value, court = $('gCourt').value, level = $('gLevel').value;
-      var err = $('gameErr');
-      if (!date || !time) { err.textContent = '날짜와 시간을 입력해 주세요.'; return; }
-      if (new Date(date + 'T' + time) < new Date()) { err.textContent = '지난 시간으로는 만들 수 없어요.'; return; }
-      var join = $('gJoin').checked;
+      var form = this, err = $('gameErr');
+      var level = $('gLevel').value, join = $('gJoin').checked;
       if (join && !canJoinLevel({ level: level }, state.me.level)) {
         err.textContent = '내 급수로는 이 제한에 참가할 수 없어요. "나도 참가"를 끄거나 제한을 바꿔 주세요.'; return;
       }
       err.textContent = '';
       busy(form, true);
-      db.from('games').insert({
-        play_date: date, play_time: time, court: court, level: level || null,
-        owner: state.me.name, s0: join ? state.me.name : null
-      }).then(function (r) {
-        busy(form, false);
-        if (r.error) {
-          err.textContent = r.error.code === '23505'
-            ? '같은 시간에 이미 ' + court + ' 경기가 있어요.'
-            : '경기 만들기 실패: ' + r.error.message;
-          return;
-        }
-        $('gTime').value = '';
-        fetchAll();
-      });
+      db.from('games').insert({ level: level || null, owner: state.me.name, s0: join ? state.me.name : null })
+        .then(function (r) {
+          busy(form, false);
+          if (r.error) {
+            if (r.error.code === '23502') return showStatus(SCHEMA_MSG, true); // 날짜/시간 필수인 예전 구조
+            err.textContent = '방 만들기 실패: ' + r.error.message;
+            return;
+          }
+          fetchAll();
+        });
     });
 
     // ---------- 경기 카드 동작 (이벤트 위임) ----------
+    var NEXT = {
+      confirm:   { from: 'open',    to: 'waiting',  label: '대기 확정' },
+      unconfirm: { from: 'waiting', to: 'open',     label: '확정 취소' },
+      start:     { from: 'waiting', to: 'playing',  label: '경기 시작' },
+      finish:    { from: 'playing', to: 'finished', label: '경기 종료', ask: '경기를 종료할까요? 4명 모두 참여 1회로 기록돼요.' }
+    };
+
     $('games').addEventListener('click', function (e) {
       var btn = e.target.closest('button[data-act]');
       if (!btn || btn.disabled) return;
@@ -347,34 +347,30 @@
       var req;
 
       if (act === 'join') {
+        if (g.status !== 'open') return;
         var idx = btn.dataset.slot != null ? +btn.dataset.slot : g.slots.indexOf(null);
         if (idx < 0 || g.slots[idx] || g.slots.indexOf(me) >= 0 || !canJoinLevel(g, state.me.level)) return;
-        var col = 's' + idx, patch = {};
-        patch[col] = me;
-        // 비어 있을 때만 잡기 → 동시에 눌러도 한 명만 성공
-        req = rpc('join_game', { p_id: g.id, p_slot: idx, p_name: me }, function () {
-          return db.from('games').update(patch).eq('id', g.id).is(col, null).select('id')
-            .then(function (r) { return r.error ? r : { data: r.data.length > 0 }; });
-        }).then(function (r) {
-          if (r.error) return r.error.code === '23514' ? showStatus('이미 이 경기에 참가 중이에요.') : dbError(r.error, '참가');
-          if (!r.data) showStatus('방금 다른 사람이 그 자리를 잡았어요.');
+        req = rpc('join_game', { p_id: g.id, p_slot: idx, p_name: me }).then(function (r) {
+          if (r.error) return r.error.code === '23514' ? showStatus('이미 이 방에 참가 중이에요.') : dbError(r.error, '참가');
+          if (!r.data) showStatus('방금 다른 사람이 그 자리를 잡았거나 방이 확정됐어요.');
         });
       } else if (act === 'leave') {
-        var i = g.slots.indexOf(me);
-        if (i < 0) return;
-        var c = 's' + i, p = {};
-        p[c] = null;
-        req = rpc('leave_game', { p_id: g.id, p_name: me }, function () {
-          return db.from('games').update(p).eq('id', g.id).eq(c, me);
-        }).then(function (r) {
+        if (g.status !== 'open' || g.slots.indexOf(me) < 0) return;
+        req = rpc('leave_game', { p_id: g.id, p_name: me }).then(function (r) {
           if (r.error) dbError(r.error, '나가기');
         });
       } else if (act === 'delete') {
-        if (g.owner !== me || !confirm('이 경기를 삭제할까요?')) return;
-        req = rpc('delete_game', { p_id: g.id, p_name: me }, function () {
-          return db.from('games').delete().eq('id', g.id).eq('owner', me);
-        }).then(function (r) {
+        if (g.owner !== me || !confirm(g.no + '번 방을 삭제할까요?')) return;
+        req = rpc('delete_game', { p_id: g.id, p_name: me }).then(function (r) {
           if (r.error) dbError(r.error, '삭제');
+        });
+      } else if (NEXT[act]) {
+        var t = NEXT[act];
+        if (g.status !== t.from || !isMember(g, me)) return;
+        if (t.ask && !confirm(t.ask)) return;
+        req = rpc('set_game_status', { p_id: g.id, p_name: me, p_from: t.from, p_to: t.to }).then(function (r) {
+          if (r.error) return dbError(r.error, t.label);
+          if (!r.data) showStatus('방 상태가 이미 바뀌었어요. 새로 불러올게요.');
         });
       }
       if (!req) return;
@@ -398,45 +394,67 @@
         return '<div class="slot filled"' + (mine ? ' style="border-color:var(--green)"' : '') + '>' +
           badge(levelOf(name)) + esc(name) + (mine ? ' <span class="tag">나</span>' : '') + '</div>';
       }
-      var canTake = g.slots.indexOf(state.me.name) < 0 && canJoinLevel(g, state.me.level);
+      var canTake = g.status === 'open' && g.slots.indexOf(state.me.name) < 0 && canJoinLevel(g, state.me.level);
       return canTake
         ? '<button type="button" class="slot empty ghost" data-act="join" data-id="' + g.id + '" data-slot="' + i + '">+ 자리 잡기</button>'
         : '<div class="slot empty">빈 자리</div>';
     }
 
+    function btnHtml(g, act, label, cls) {
+      return '<button type="button"' + (cls ? ' class="' + cls + '"' : '') + ' data-act="' + act + '" data-id="' + g.id + '">' + label + '</button>';
+    }
+
     function gameHtml(g) {
       var n = filled(g), full = n === 4;
-      var me = state.me.name, joined = g.slots.indexOf(me) >= 0;
+      var me = state.me.name, joined = g.slots.indexOf(me) >= 0, member = isMember(g, me);
       var blocked = !canJoinLevel(g, state.me.level);
-      var actions = '';
-      if (joined) actions += '<button type="button" class="ghost" data-act="leave" data-id="' + g.id + '">나가기</button>';
-      else if (!full && !blocked) actions += '<button type="button" data-act="join" data-id="' + g.id + '">참가</button>';
-      if (g.owner === me) actions += '<button type="button" class="danger" data-act="delete" data-id="' + g.id + '">삭제</button>';
+      var tag, info = '', actions = '';
 
-      return '<div class="game' + (full ? ' full' : '') + '">' +
-        '<div class="top"><span>' + esc(g.court) + ' · ' + esc(g.time) + '</span>' +
-          '<span class="tag ' + (full ? 'full">확정' : 'open">모집중 ' + n + '/4') + '</span></div>' +
-        '<div class="meta"><span>📅 ' + fmtDate(g.date) + '</span>' +
-          '<span>🎯 ' + (g.level ? esc(g.level) + ' 이상' : '급수 무관') + '</span>' +
+      if (g.status === 'open') {
+        tag = full ? '<span class="tag open">모집완료 4/4</span>' : '<span class="tag open">모집중 ' + n + '/4</span>';
+        if (full && member) actions += btnHtml(g, 'confirm', '대기 확정');
+        if (joined) actions += btnHtml(g, 'leave', '나가기', 'ghost');
+        else if (!full && !blocked) actions += btnHtml(g, 'join', '참가');
+        if (full && !member) info = '4명이 다 찼어요. 참가자가 대기 확정을 누르면 경기대기로 넘어가요.';
+        else if (blocked && !joined) info = '내 급수로는 참가할 수 없는 방이에요.';
+      } else if (g.status === 'waiting') {
+        tag = '<span class="tag full">경기대기</span>';
+        info = '확정됐어요. 코트가 비면 경기 시작을 눌러 주세요.';
+        if (member) actions += btnHtml(g, 'unconfirm', '확정 취소', 'ghost') + btnHtml(g, 'start', '경기 시작');
+      } else if (g.status === 'playing') {
+        tag = '<span class="tag play">경기중</span>';
+        info = '⏱ ' + hm(g.startedAt) + ' 시작 · ' + mins(g.startedAt) + '분째';
+        if (member) actions += btnHtml(g, 'finish', '경기 종료', 'danger');
+      } else {
+        tag = '<span class="tag">종료</span>';
+        info = '⏱ ' + (g.startedAt ? hm(g.startedAt) + ' ~ ' : '') + hm(g.endedAt) +
+          (g.startedAt ? ' · ' + mins(g.startedAt, g.endedAt) + '분' : '');
+      }
+      if (g.owner === me && (g.status === 'open' || g.status === 'waiting')) actions += btnHtml(g, 'delete', '삭제', 'danger');
+
+      return '<div class="game st-' + g.status + '">' +
+        '<div class="top"><span>' + esc(g.no != null ? g.no + '번 방' : '방') + '</span>' + tag + '</div>' +
+        '<div class="meta"><span>🎯 ' + (g.level ? esc(g.level) + ' 이상' : '급수 무관') + '</span>' +
           '<span>👤 ' + esc(g.owner) + '</span></div>' +
         '<div class="slots">' + slotHtml(g, 0) + slotHtml(g, 1) +
           '<div class="vs">VS</div>' + slotHtml(g, 2) + slotHtml(g, 3) + '</div>' +
-        (blocked && !joined ? '<div class="meta">내 급수로는 참가할 수 없는 경기예요.</div>' : '') +
+        (info ? '<div class="meta">' + info + '</div>' : '') +
         (actions ? '<div class="actions">' + actions + '</div>' : '') +
       '</div>';
     }
 
     function renderGames() {
       var now = Date.now(), me = state.me.name;
-      // 시작 2시간이 지난 경기는 숨김
       var list = state.games.filter(function (g) {
-        if (new Date(g.date + 'T' + g.time).getTime() + 2 * 3600e3 <= now) return false;
-        if (state.filter === 'open') return filled(g) < 4;
-        if (state.filter === 'mine') return g.owner === me || g.slots.indexOf(me) >= 0;
+        if (g.status === 'finished' && (!g.endedAt || new Date(g.endedAt).getTime() + DONE_SHOW_MS <= now)) return false;
+        if (state.filter === 'mine') return isMember(g, me);
+        if (state.filter !== 'all') return g.status === state.filter;
         return true;
+      }).sort(function (a, b) {
+        return (ORDER[a.status] - ORDER[b.status]) || ((a.no || 0) - (b.no || 0));
       });
       $('games').innerHTML = list.map(gameHtml).join('');
-      $('gamesEmpty').textContent = state.loaded ? '표시할 경기가 없어요. 위에서 경기를 만들어 보세요.' : '불러오는 중…';
+      $('gamesEmpty').textContent = state.loaded ? '표시할 방이 없어요. 위에서 방을 만들어 보세요.' : '불러오는 중…';
       $('gamesEmpty').classList.toggle('hidden', list.length > 0);
     }
 
@@ -469,8 +487,8 @@
 
     render();
     fetchAll();
-    // 화면에 띄워둔 채로 시간이 지나도 지난 경기가 사라지게
-    setInterval(function () { if (state.me) renderGames(); }, 60e3);
+    // 경기 시간(분) 표시와 종료 경기 숨김을 주기적으로 갱신
+    setInterval(function () { if (state.me) renderGames(); }, 30e3);
   })();
   </script>
 </body>
