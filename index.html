@@ -1,0 +1,383 @@
+<!doctype html>
+<html class="no-js" lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>🏸 배드민턴 경기 잡기</title>
+  <meta name="description" content="배드민턴 복식 경기를 만들고 참가 신청하는 페이지">
+
+  <meta property="og:title" content="배드민턴 경기 잡기">
+  <meta property="og:type" content="website">
+  <meta property="og:description" content="배드민턴 복식 경기를 만들고 참가 신청하는 페이지">
+
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.png">
+  <link rel="manifest" href="site.webmanifest">
+  <meta name="theme-color" content="#1f8a5b">
+  <style>
+    :root {
+      --bg:#f4f7f5; --card:#fff; --ink:#1c2b24; --muted:#6b7b73; --line:#dfe7e2;
+      --green:#1f8a5b; --green-d:#166b46; --amber:#e6a100; --red:#d64545; --blue:#2f6fdb;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif; background:var(--bg); color:var(--ink); }
+    header { background:var(--green); color:#fff; padding:14px 16px; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    header h1 { font-size:18px; margin:0; }
+    header .me { font-size:13px; display:flex; align-items:center; gap:8px; }
+    main { max-width:900px; margin:0 auto; padding:16px; display:grid; gap:16px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+    h2 { font-size:16px; margin:0 0 12px; display:flex; align-items:center; justify-content:space-between; }
+    label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+    input, select { width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:15px; background:#fff; }
+    .row { display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); }
+    button { border:0; border-radius:8px; padding:10px 14px; font-size:14px; font-weight:600; cursor:pointer; background:var(--green); color:#fff; }
+    button:hover { background:var(--green-d); }
+    button.ghost { background:#eef3f0; color:var(--ink); }
+    button.ghost:hover { background:#e1e9e4; }
+    button.danger { background:var(--red); }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; color:#fff; background:#888; }
+    .lv-S{background:#8e44ad}.lv-A{background:#d64545}.lv-B{background:#e67e22}.lv-C{background:#2f6fdb}.lv-D{background:#1f8a5b}.lv-초심{background:#7f8c8d}
+    .games { display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(270px,1fr)); }
+    .game { border:1px solid var(--line); border-radius:10px; padding:12px; display:grid; gap:8px; }
+    .game.full { background:#f1f8f4; border-color:#b9dcc9; }
+    .game .top { display:flex; justify-content:space-between; align-items:center; font-weight:700; }
+    .tag { font-size:12px; padding:2px 8px; border-radius:6px; background:#eef3f0; color:var(--muted); }
+    .tag.open { background:#fff4d6; color:#8a6400; } .tag.full { background:#d6f0e0; color:#166b46; }
+    .meta { font-size:13px; color:var(--muted); display:flex; flex-wrap:wrap; gap:6px 12px; }
+    .slots { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+    .slot { border:1px dashed var(--line); border-radius:8px; padding:8px; font-size:14px; min-height:38px; display:flex; align-items:center; gap:6px; }
+    .slot.filled { border-style:solid; background:#fafcfb; }
+    .slot.empty { color:#aab6b0; justify-content:center; }
+    .actions { display:flex; gap:6px; justify-content:flex-end; }
+    .players { display:flex; flex-wrap:wrap; gap:6px; }
+    .chip { display:flex; align-items:center; gap:6px; border:1px solid var(--line); border-radius:999px; padding:4px 10px 4px 6px; font-size:13px; }
+    .chip.me { border-color:var(--green); background:#eaf6f0; }
+    .empty-msg { color:var(--muted); font-size:14px; padding:8px 0; }
+    .login { max-width:420px; margin:40px auto; }
+    .hidden { display:none !important; }
+    header .me button { padding:6px 10px; font-size:12px; }
+    .vs { grid-column:1 / -1; text-align:center; font-size:11px; color:var(--muted); font-weight:700; letter-spacing:.1em; }
+    .count { font-size:12px; color:var(--muted); font-weight:400; }
+    .err { color:var(--red); font-size:13px; }
+    .err:empty { display:none; }
+    .login { width:calc(100% - 32px); }
+    .stack { display:grid; gap:12px; }
+    .filters { display:flex; gap:6px; flex-wrap:wrap; }
+    .filters button.on { background:var(--green); color:#fff; }
+  </style>
+</head>
+
+<body>
+  <header>
+    <h1>🏸 배드민턴 경기 잡기</h1>
+    <div class="me hidden" id="meBox">
+      <span id="meBadge" class="badge"></span>
+      <strong id="meName"></strong>
+      <button class="ghost" id="logoutBtn" type="button">로그아웃</button>
+    </div>
+  </header>
+
+  <!-- 로그인 -->
+  <section class="card login hidden" id="loginView">
+    <h2>입장하기</h2>
+    <form id="loginForm" class="stack" autocomplete="off">
+      <div>
+        <label for="loginName">이름</label>
+        <input id="loginName" maxlength="12" placeholder="예: 김민수" required>
+      </div>
+      <div>
+        <label for="loginLevel">급수</label>
+        <select id="loginLevel"></select>
+      </div>
+      <button type="submit">입장</button>
+      <div class="err" id="loginErr"></div>
+    </form>
+  </section>
+
+  <!-- 메인 -->
+  <main class="hidden" id="appView">
+    <section class="card">
+      <h2>경기 만들기</h2>
+      <form id="gameForm" class="stack">
+        <div class="row">
+          <div><label for="gDate">날짜</label><input type="date" id="gDate" required></div>
+          <div><label for="gTime">시간</label><input type="time" id="gTime" required></div>
+          <div><label for="gCourt">코트</label>
+            <select id="gCourt"></select></div>
+          <div><label for="gLevel">급수 제한</label>
+            <select id="gLevel"><option value="">제한 없음</option></select></div>
+        </div>
+        <div class="actions">
+          <label style="display:flex;align-items:center;gap:6px;margin:0 auto 0 0;font-size:13px;color:var(--ink)">
+            <input type="checkbox" id="gJoin" checked style="width:auto"> 나도 참가
+          </label>
+          <button type="submit">경기 만들기</button>
+        </div>
+        <div class="err" id="gameErr"></div>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>경기 목록 <span class="filters" id="filters">
+        <button type="button" class="ghost on" data-f="all">전체</button>
+        <button type="button" class="ghost" data-f="open">모집중</button>
+        <button type="button" class="ghost" data-f="mine">내 경기</button>
+      </span></h2>
+      <div class="games" id="games"></div>
+      <div class="empty-msg hidden" id="gamesEmpty">표시할 경기가 없어요. 위에서 경기를 만들어 보세요.</div>
+    </section>
+
+    <section class="card">
+      <h2>참가자 <span class="count" id="playerCount"></span></h2>
+      <div class="players" id="players"></div>
+    </section>
+  </main>
+
+  <script>
+  (function () {
+    'use strict';
+
+    var LEVELS = ['S', 'A', 'B', 'C', 'D', '초심'];
+    var COURTS = ['1번 코트', '2번 코트', '3번 코트', '4번 코트'];
+    var KEY = { me: 'bm.me', players: 'bm.players', games: 'bm.games' };
+
+    // ---------- 저장소 (localStorage가 막혀 있어도 동작) ----------
+    var mem = {};
+    function load(k, def) {
+      try {
+        var v = localStorage.getItem(k);
+        return v == null ? def : JSON.parse(v);
+      } catch (e) {
+        return k in mem ? mem[k] : def;
+      }
+    }
+    function save(k, v) {
+      mem[k] = v;
+      try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* 메모리에만 유지 */ }
+    }
+
+    var state = {
+      me: load(KEY.me, null),                 // { name, level }
+      players: load(KEY.players, {}),         // name -> { name, level }
+      games: load(KEY.games, []),             // [{ id, date, time, court, level, owner, slots:[name|null x4] }]
+      filter: 'all'
+    };
+
+    // ---------- 유틸 ----------
+    var $ = function (id) { return document.getElementById(id); };
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
+    function badge(level) {
+      var lv = LEVELS.indexOf(level) >= 0 ? level : '초심';
+      return '<span class="badge lv-' + lv + '">' + esc(lv) + '</span>';
+    }
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    function todayStr() {
+      var d = new Date();
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    }
+    function fmtDate(s) {
+      var p = s.split('-');
+      var d = new Date(+p[0], +p[1] - 1, +p[2]);
+      return (+p[1]) + '/' + (+p[2]) + ' (' + '일월화수목금토'[d.getDay()] + ')';
+    }
+    function levelOf(name) {
+      return state.players[name] ? state.players[name].level : '초심';
+    }
+    // 급수 제한: 해당 급수 이상만 참가 (S가 가장 높음)
+    function canJoinLevel(game, level) {
+      if (!game.level) return true;
+      return LEVELS.indexOf(level) <= LEVELS.indexOf(game.level);
+    }
+    function filled(g) { return g.slots.filter(Boolean).length; }
+    function persist() { save(KEY.games, state.games); save(KEY.players, state.players); }
+
+    // ---------- 초기 select 채우기 ----------
+    LEVELS.forEach(function (lv) {
+      $('loginLevel').insertAdjacentHTML('beforeend', '<option value="' + lv + '">' + lv + '</option>');
+      $('gLevel').insertAdjacentHTML('beforeend', '<option value="' + lv + '">' + lv + ' 이상</option>');
+    });
+    $('loginLevel').value = 'C';
+    COURTS.forEach(function (c) {
+      $('gCourt').insertAdjacentHTML('beforeend', '<option>' + c + '</option>');
+    });
+    $('gDate').value = todayStr();
+    $('gDate').min = todayStr();
+
+    // ---------- 로그인 ----------
+    $('loginForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var name = $('loginName').value.trim();
+      var level = $('loginLevel').value;
+      if (!name) { $('loginErr').textContent = '이름을 입력해 주세요.'; return; }
+      state.me = { name: name, level: level };
+      state.players[name] = { name: name, level: level };
+      save(KEY.me, state.me);
+      persist();
+      $('loginErr').textContent = '';
+      render();
+    });
+    $('logoutBtn').addEventListener('click', function () {
+      state.me = null;
+      save(KEY.me, null);
+      render();
+    });
+
+    // ---------- 경기 만들기 ----------
+    $('gameForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var date = $('gDate').value, time = $('gTime').value, court = $('gCourt').value, level = $('gLevel').value;
+      var err = $('gameErr');
+      if (!date || !time) { err.textContent = '날짜와 시간을 입력해 주세요.'; return; }
+      if (new Date(date + 'T' + time) < new Date()) { err.textContent = '지난 시간으로는 만들 수 없어요.'; return; }
+      var clash = state.games.some(function (g) { return g.date === date && g.time === time && g.court === court; });
+      if (clash) { err.textContent = '같은 시간에 이미 ' + court + ' 경기가 있어요.'; return; }
+      var join = $('gJoin').checked;
+      if (join && !canJoinLevel({ level: level }, state.me.level)) {
+        err.textContent = '내 급수로는 이 제한에 참가할 수 없어요. "나도 참가"를 끄거나 제한을 바꿔 주세요.'; return;
+      }
+      err.textContent = '';
+      state.games.push({
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        date: date, time: time, court: court, level: level,
+        owner: state.me.name,
+        slots: [join ? state.me.name : null, null, null, null]
+      });
+      persist();
+      $('gTime').value = '';
+      render();
+    });
+
+    // ---------- 경기 카드 동작 (이벤트 위임) ----------
+    $('games').addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      var g = state.games.find(function (x) { return x.id === btn.dataset.id; });
+      if (!g) return;
+      var me = state.me.name;
+      var act = btn.dataset.act;
+
+      if (act === 'join') {
+        var idx = btn.dataset.slot != null ? +btn.dataset.slot : g.slots.indexOf(null);
+        if (idx < 0 || g.slots[idx] || g.slots.indexOf(me) >= 0) return;
+        if (!canJoinLevel(g, state.me.level)) return;
+        g.slots[idx] = me;
+      } else if (act === 'leave') {
+        var i = g.slots.indexOf(me);
+        if (i >= 0) g.slots[i] = null;
+      } else if (act === 'delete') {
+        if (g.owner !== me) return;
+        if (!confirm('이 경기를 삭제할까요?')) return;
+        state.games = state.games.filter(function (x) { return x !== g; });
+      }
+      persist();
+      render();
+    });
+
+    $('filters').addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-f]');
+      if (!b) return;
+      state.filter = b.dataset.f;
+      Array.prototype.forEach.call(this.children, function (c) { c.classList.toggle('on', c === b); });
+      renderGames();
+    });
+
+    // ---------- 렌더링 ----------
+    function slotHtml(g, i) {
+      var name = g.slots[i];
+      if (name) {
+        var mine = name === state.me.name;
+        return '<div class="slot filled"' + (mine ? ' style="border-color:var(--green)"' : '') + '>' +
+          badge(levelOf(name)) + esc(name) + (mine ? ' <span class="tag">나</span>' : '') + '</div>';
+      }
+      var canTake = g.slots.indexOf(state.me.name) < 0 && canJoinLevel(g, state.me.level);
+      return canTake
+        ? '<button type="button" class="slot empty ghost" data-act="join" data-id="' + g.id + '" data-slot="' + i + '">+ 자리 잡기</button>'
+        : '<div class="slot empty">빈 자리</div>';
+    }
+
+    function gameHtml(g) {
+      var n = filled(g), full = n === 4;
+      var me = state.me.name, joined = g.slots.indexOf(me) >= 0;
+      var blocked = !canJoinLevel(g, state.me.level);
+      var actions = '';
+      if (joined) actions += '<button type="button" class="ghost" data-act="leave" data-id="' + g.id + '">나가기</button>';
+      else if (!full && !blocked) actions += '<button type="button" data-act="join" data-id="' + g.id + '">참가</button>';
+      if (g.owner === me) actions += '<button type="button" class="danger" data-act="delete" data-id="' + g.id + '">삭제</button>';
+
+      return '<div class="game' + (full ? ' full' : '') + '">' +
+        '<div class="top"><span>' + esc(g.court) + ' · ' + esc(g.time) + '</span>' +
+          '<span class="tag ' + (full ? 'full">확정' : 'open">모집중 ' + n + '/4') + '</span></div>' +
+        '<div class="meta"><span>📅 ' + fmtDate(g.date) + '</span>' +
+          '<span>🎯 ' + (g.level ? esc(g.level) + ' 이상' : '급수 무관') + '</span>' +
+          '<span>👤 ' + esc(g.owner) + '</span></div>' +
+        '<div class="slots">' + slotHtml(g, 0) + slotHtml(g, 1) +
+          '<div class="vs">VS</div>' + slotHtml(g, 2) + slotHtml(g, 3) + '</div>' +
+        (blocked && !joined ? '<div class="meta">내 급수로는 참가할 수 없는 경기예요.</div>' : '') +
+        (actions ? '<div class="actions">' + actions + '</div>' : '') +
+      '</div>';
+    }
+
+    function renderGames() {
+      var now = new Date();
+      // 지난 경기는 자동 정리 (시작 2시간 후)
+      var before = state.games.length;
+      state.games = state.games.filter(function (g) {
+        return new Date(g.date + 'T' + g.time).getTime() + 2 * 3600e3 > now.getTime();
+      });
+      if (state.games.length !== before) persist();
+
+      var me = state.me.name;
+      var list = state.games.slice().sort(function (a, b) {
+        return (a.date + a.time + a.court).localeCompare(b.date + b.time + b.court);
+      }).filter(function (g) {
+        if (state.filter === 'open') return filled(g) < 4;
+        if (state.filter === 'mine') return g.owner === me || g.slots.indexOf(me) >= 0;
+        return true;
+      });
+      $('games').innerHTML = list.map(gameHtml).join('');
+      $('gamesEmpty').classList.toggle('hidden', list.length > 0);
+    }
+
+    function renderPlayers() {
+      var names = Object.keys(state.players).sort(function (a, b) {
+        var d = LEVELS.indexOf(levelOf(a)) - LEVELS.indexOf(levelOf(b));
+        return d || a.localeCompare(b, 'ko');
+      });
+      $('playerCount').textContent = names.length + '명';
+      $('players').innerHTML = names.length ? names.map(function (n) {
+        return '<span class="chip' + (n === state.me.name ? ' me' : '') + '">' + badge(levelOf(n)) + esc(n) + '</span>';
+      }).join('') : '<div class="empty-msg">아직 참가자가 없어요.</div>';
+    }
+
+    function render() {
+      var logged = !!state.me;
+      $('loginView').classList.toggle('hidden', logged);
+      $('appView').classList.toggle('hidden', !logged);
+      $('meBox').classList.toggle('hidden', !logged);
+      if (!logged) { $('loginName').focus(); return; }
+      $('meName').textContent = state.me.name;
+      $('meBadge').className = 'badge lv-' + state.me.level;
+      $('meBadge').textContent = state.me.level;
+      renderGames();
+      renderPlayers();
+    }
+
+    // 다른 탭에서 바뀌면 동기화
+    window.addEventListener('storage', function (e) {
+      if (e.key === KEY.games) state.games = load(KEY.games, []);
+      else if (e.key === KEY.players) state.players = load(KEY.players, {});
+      else return;
+      if (state.me) render();
+    });
+
+    render();
+  })();
+  </script>
+</body>
+</html>
