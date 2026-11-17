@@ -47,29 +47,37 @@ alter table public.games add constraint games_status_full
 -- 이미 만든 테이블에 성별 컬럼 추가 (처음 실행이면 아무 일 없음)
 alter table public.players add column if not exists gender text check (gender in ('남','여'));
 
--- 참가자별 통계: 이름, 급수, 성별, 이번 달 참여횟수, 총 참여횟수
--- '참여' = 경기종료(finished)까지 한 경기 (월은 종료 시각, 한국 시간 기준)
-create or replace view public.player_stats
-with (security_invoker = true) as
-with played as (
-  select (coalesce(g.ended_at, g.created_at) at time zone 'Asia/Seoul')::date as play_date, x.name
-  from public.games g
-  cross join lateral (values (g.s0), (g.s1), (g.s2), (g.s3)) as x(name)
-  where g.status = 'finished'
-)
-select
-  p.name   as 이름,
-  p.level  as 급수,
-  p.gender as 성별,
-  count(pl.name) filter (
-    where date_trunc('month', pl.play_date) = date_trunc('month', (now() at time zone 'Asia/Seoul'))
-  )::int   as 월_참여횟수,
-  count(pl.name)::int as 총_참여횟수
-from public.players p
-left join played pl on pl.name = p.name
-group by p.name, p.level, p.gender;
+-- 참여횟수는 쓰지 않음 (경기 종료 시 방을 지움)
+drop view if exists public.player_stats;
 
-grant select on public.player_stats to anon, authenticated;
+-- 한 사람은 한 방에만: 다른 방에 이미 있으면 참가/방 만들기 거부
+-- (방 만들기·참가·예전 방식 수정 등 모든 경로에 적용되도록 트리거로 처리)
+create or replace function public.games_one_room_per_player()
+returns trigger language plpgsql as $$
+declare nm text; other bigint;
+begin
+  foreach nm in array array_remove(array[new.s0, new.s1, new.s2, new.s3], null) loop
+    -- 이미 이 방에 있던 사람은 검사하지 않음
+    if tg_op = 'UPDATE' and nm in (coalesce(old.s0,''), coalesce(old.s1,''), coalesce(old.s2,''), coalesce(old.s3,'')) then
+      continue;
+    end if;
+    -- 같은 사람이 두 방에 동시에 들어가는 경우 대비: 이름별로 순서대로 처리
+    perform pg_advisory_xact_lock(hashtext('bm_player:' || nm));
+    select g.room_no into other from public.games g
+     where g.id <> new.id
+       and nm in (coalesce(g.s0,''), coalesce(g.s1,''), coalesce(g.s2,''), coalesce(g.s3,''))
+     limit 1;
+    if found then
+      raise exception '%님은 이미 %번 방에 참가 중이에요.', nm, other using errcode = 'P0001';
+    end if;
+  end loop;
+  return new;
+end $$;
+
+drop trigger if exists games_one_room on public.games;
+create trigger games_one_room
+  before insert or update of s0, s1, s2, s3 on public.games
+  for each row execute function public.games_one_room_per_player();
 
 -- 접근 권한: 로그인 없이 이름만 쓰는 앱이라 공개 키(anon)로 읽기/쓰기를 허용합니다.
 -- ⚠️ 누구나 데이터를 바꿀 수 있다는 뜻입니다. 진짜 인증을 붙이면 아래 정책을 좁히세요.
@@ -142,6 +150,15 @@ begin
   if (p_from, p_to) not in (('open','waiting'), ('waiting','open'), ('waiting','playing'), ('playing','finished')) then
     raise exception 'invalid transition % -> %', p_from, p_to;
   end if;
+  -- 경기 종료 = 방 삭제 (기록 남기지 않음)
+  if p_to = 'finished' then
+    delete from public.games
+     where id = p_id
+       and status = 'playing'
+       and p_name in (owner, coalesce(s0,''), coalesce(s1,''), coalesce(s2,''), coalesce(s3,''));
+    get diagnostics n = row_count;
+    return n > 0;
+  end if;
   update public.games
      set status     = p_to,
          started_at = case when p_to = 'playing'  then now() when p_to = 'open' then null else started_at end,
@@ -181,5 +198,10 @@ begin
 end $$;
 
 grant execute on function public.set_game_court(uuid, text, int) to anon, authenticated;
+
+notify pgrst, 'reload schema';
+
+-- 예전에 종료 상태로 남아 있던 방 정리
+delete from public.games where status = 'finished';
 
 notify pgrst, 'reload schema';

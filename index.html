@@ -202,6 +202,12 @@
     }
     function filled(g) { return g.slots.filter(Boolean).length; }
     function isMember(g, name) { return g.owner === name || g.slots.indexOf(name) >= 0; }
+    // 내가 자리를 잡고 있는 방 (한 사람은 한 방에만)
+    function myRoom() {
+      var me = state.me && state.me.name;
+      return state.games.find(function (g) { return g.status !== 'finished' && g.slots.indexOf(me) >= 0; });
+    }
+    function roomName(g) { return g.no != null ? g.no + '번 방' : '다른 방'; }
     function fromRow(r) {
       return {
         id: r.id, no: r.room_no, level: r.level || '', owner: r.owner,
@@ -312,6 +318,10 @@
       e.preventDefault();
       var form = this, err = $('gameErr');
       var level = $('gLevel').value, join = $('gJoin').checked;
+      var mine = myRoom();
+      if (join && mine) {
+        err.textContent = '이미 ' + roomName(mine) + '에 참가 중이에요. 나간 뒤에 참가하거나 "나도 참가"를 꺼 주세요.'; return;
+      }
       if (join && !canJoinLevel({ level: level }, state.me.level)) {
         err.textContent = '내 급수로는 이 제한에 참가할 수 없어요. "나도 참가"를 끄거나 제한을 바꿔 주세요.'; return;
       }
@@ -322,7 +332,7 @@
           busy(form, false);
           if (r.error) {
             if (r.error.code === '23502') return showStatus(SCHEMA_MSG, true); // 날짜/시간 필수인 예전 구조
-            err.textContent = '방 만들기 실패: ' + r.error.message;
+            err.textContent = r.error.code === 'P0001' ? r.error.message : '방 만들기 실패: ' + r.error.message;
             return;
           }
           fetchAll();
@@ -334,7 +344,7 @@
       confirm:   { from: 'open',    to: 'waiting',  label: '대기 확정' },
       unconfirm: { from: 'waiting', to: 'open',     label: '확정 취소' },
       start:     { from: 'waiting', to: 'playing',  label: '경기 시작' },
-      finish:    { from: 'playing', to: 'finished', label: '경기 종료', ask: '경기를 종료할까요?' }
+      finish:    { from: 'playing', to: 'finished', label: '경기 종료', ask: '경기를 종료할까요? 방이 삭제돼요.' }
     };
 
     $('games').addEventListener('click', function (e) {
@@ -350,8 +360,14 @@
         if (g.status !== 'open') return;
         var idx = btn.dataset.slot != null ? +btn.dataset.slot : g.slots.indexOf(null);
         if (idx < 0 || g.slots[idx] || g.slots.indexOf(me) >= 0 || !canJoinLevel(g, state.me.level)) return;
+        var cur = myRoom();
+        if (cur) { showStatus('이미 ' + roomName(cur) + '에 참가 중이에요. 나간 뒤에 다른 방에 들어갈 수 있어요.'); return; }
         req = rpc('join_game', { p_id: g.id, p_slot: idx, p_name: me }).then(function (r) {
-          if (r.error) return r.error.code === '23514' ? showStatus('이미 이 방에 참가 중이에요.') : dbError(r.error, '참가');
+          if (r.error) {
+            if (r.error.code === '23514') return showStatus('이미 이 방에 참가 중이에요.');
+            if (r.error.code === 'P0001') return showStatus(r.error.message);
+            return dbError(r.error, '참가');
+          }
           if (!r.data) showStatus('방금 다른 사람이 그 자리를 잡았거나 방이 확정됐어요.');
         });
       } else if (act === 'leave') {
@@ -410,7 +426,7 @@
         return '<div class="slot filled"' + (mine ? ' style="border-color:var(--green)"' : '') + '>' +
           badge(levelOf(name)) + esc(name) + (mine ? ' <span class="tag">나</span>' : '') + '</div>';
       }
-      var canTake = g.status === 'open' && g.slots.indexOf(state.me.name) < 0 && canJoinLevel(g, state.me.level);
+      var canTake = g.status === 'open' && !myRoom() && canJoinLevel(g, state.me.level);
       return canTake
         ? '<button type="button" class="slot empty ghost" data-act="join" data-id="' + g.id + '" data-slot="' + i + '">+ 자리 잡기</button>'
         : '<div class="slot empty">빈 자리</div>';
@@ -424,14 +440,16 @@
       var n = filled(g), full = n === 4;
       var me = state.me.name, joined = g.slots.indexOf(me) >= 0, member = isMember(g, me);
       var blocked = !canJoinLevel(g, state.me.level);
+      var other = joined ? null : myRoom();
       var tag, info = '', actions = '';
 
       if (g.status === 'open') {
         tag = full ? '<span class="tag open">모집완료 4/4</span>' : '<span class="tag open">모집중 ' + n + '/4</span>';
         if (full && member) actions += btnHtml(g, 'confirm', '대기 확정');
         if (joined) actions += btnHtml(g, 'leave', '나가기', 'ghost');
-        else if (!full && !blocked) actions += btnHtml(g, 'join', '참가');
+        else if (!full && !blocked && !other) actions += btnHtml(g, 'join', '참가');
         if (full && !member) info = '4명이 다 찼어요. 참가자가 대기 확정을 누르면 경기대기로 넘어가요.';
+        else if (!full && other) info = '이미 ' + roomName(other) + '에 참가 중이라 들어갈 수 없어요.';
         else if (blocked && !joined) info = '내 급수로는 참가할 수 없는 방이에요.';
       } else if (g.status === 'waiting') {
         tag = '<span class="tag full">경기대기</span>';
