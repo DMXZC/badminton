@@ -57,6 +57,7 @@
     .empty-msg { color:var(--muted); font-size:14px; padding:8px 0; }
     .login { max-width:420px; margin:40px auto; }
     .hidden { display:none !important; }
+    .status { max-width:868px; margin:12px auto 0; width:calc(100% - 32px); padding:10px 14px; border-radius:8px; background:#fff4d6; color:#8a6400; font-size:14px; }
     header .me button { padding:6px 10px; font-size:12px; }
     .vs { grid-column:1 / -1; text-align:center; font-size:11px; color:var(--muted); font-weight:700; letter-spacing:.1em; }
     .count { font-size:12px; color:var(--muted); font-weight:400; }
@@ -91,12 +92,18 @@
         <label for="loginLevel">급수</label>
         <select id="loginLevel"></select>
       </div>
+      <div>
+        <label for="loginGender">성별</label>
+        <select id="loginGender"><option value="남">남</option><option value="여">여</option></select>
+      </div>
       <button type="submit">입장</button>
       <div class="err" id="loginErr"></div>
     </form>
   </section>
 
   <!-- 메인 -->
+  <div class="status hidden" id="status" role="status"></div>
+
   <main class="hidden" id="appView">
     <section class="card">
       <h2>경기 만들기</h2>
@@ -130,43 +137,42 @@
     </section>
 
     <section class="card">
-      <h2>참가자 <span class="count" id="playerCount"></span></h2>
+      <h2>참가자 <span class="count"><span id="playerCount"></span> · 이번 달 / 총 참여</span></h2>
       <div class="players" id="players"></div>
     </section>
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.min.js"></script>
   <script>
   (function () {
     'use strict';
 
+    // Supabase 공개 설정 (publishable 키는 브라우저에 노출돼도 되는 키)
+    var SUPABASE_URL = 'https://zyhyfayylxzpwbwofhqa.supabase.co';
+    var SUPABASE_KEY = 'sb_publishable_07_Wd4wErgY6L1SOqFegxA_XPdS_Wg8';
+
     var LEVELS = ['S', 'A', 'B', 'C', 'D', '초심'];
     var COURTS = ['1번 코트', '2번 코트', '3번 코트', '4번 코트'];
-    var KEY = { me: 'bm.me', players: 'bm.players', games: 'bm.games' };
+    var ME_KEY = 'bm.me';
 
-    // ---------- 저장소 (localStorage가 막혀 있어도 동작) ----------
-    var mem = {};
-    function load(k, def) {
-      try {
-        var v = localStorage.getItem(k);
-        return v == null ? def : JSON.parse(v);
-      } catch (e) {
-        return k in mem ? mem[k] : def;
-      }
-    }
-    function save(k, v) {
-      mem[k] = v;
-      try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* 메모리에만 유지 */ }
-    }
+    var $ = function (id) { return document.getElementById(id); };
 
-    var state = {
-      me: load(KEY.me, null),                 // { name, level }
-      players: load(KEY.players, {}),         // name -> { name, level }
-      games: load(KEY.games, []),             // [{ id, date, time, court, level, owner, slots:[name|null x4] }]
-      filter: 'all'
-    };
+    if (!window.supabase) {
+      $('status').textContent = 'DB 라이브러리를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.';
+      $('status').classList.remove('hidden');
+      return;
+    }
+    var db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    // 내 정보만 이 기기에 저장 (경기/참가자는 DB)
+    function loadMe() { try { return JSON.parse(localStorage.getItem(ME_KEY)); } catch (e) { return null; } }
+    function saveMe(v) { try { localStorage.setItem(ME_KEY, JSON.stringify(v)); } catch (e) { /* 무시 */ } }
+
+    var me0 = loadMe();
+    if (me0 && !me0.gender) me0 = null; // 성별 없던 예전 로그인 정보는 다시 입장
+    var state = { me: me0, players: {}, games: [], filter: 'all', loaded: false };
 
     // ---------- 유틸 ----------
-    var $ = function (id) { return document.getElementById(id); };
     function esc(s) {
       return String(s).replace(/[&<>"']/g, function (c) {
         return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -177,25 +183,78 @@
       return '<span class="badge lv-' + lv + '">' + esc(lv) + '</span>';
     }
     function pad(n) { return (n < 10 ? '0' : '') + n; }
-    function todayStr() {
-      var d = new Date();
-      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
-    }
+    function dateStr(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+    function todayStr() { return dateStr(new Date()); }
     function fmtDate(s) {
       var p = s.split('-');
       var d = new Date(+p[0], +p[1] - 1, +p[2]);
       return (+p[1]) + '/' + (+p[2]) + ' (' + '일월화수목금토'[d.getDay()] + ')';
     }
-    function levelOf(name) {
-      return state.players[name] ? state.players[name].level : '초심';
-    }
+    function levelOf(name) { return state.players[name] ? state.players[name].level : '초심'; }
     // 급수 제한: 해당 급수 이상만 참가 (S가 가장 높음)
     function canJoinLevel(game, level) {
       if (!game.level) return true;
       return LEVELS.indexOf(level) <= LEVELS.indexOf(game.level);
     }
     function filled(g) { return g.slots.filter(Boolean).length; }
-    function persist() { save(KEY.games, state.games); save(KEY.players, state.players); }
+    function fromRow(r) {
+      return {
+        id: r.id, date: r.play_date, time: String(r.play_time).slice(0, 5), court: r.court,
+        level: r.level || '', owner: r.owner, slots: [r.s0, r.s1, r.s2, r.s3]
+      };
+    }
+
+    var statusTimer;
+    function showStatus(msg, sticky) {
+      var el = $('status');
+      el.textContent = msg;
+      el.classList.toggle('hidden', !msg);
+      clearTimeout(statusTimer);
+      if (msg && !sticky) statusTimer = setTimeout(function () { el.classList.add('hidden'); }, 4000);
+    }
+    function dbError(err, what) {
+      console.error(what, err);
+      if (err && err.code === 'PGRST205') {
+        showStatus('DB 테이블이 아직 없어요. supabase/schema.sql 을 Supabase SQL Editor에서 실행해 주세요.', true);
+      } else {
+        showStatus(what + ' 실패: ' + ((err && err.message) || '알 수 없는 오류'));
+      }
+    }
+
+    // ---------- DB ----------
+    function fetchAll() {
+      var y = new Date(); y.setDate(y.getDate() - 1);
+      return Promise.all([
+        db.from('games').select('*').gte('play_date', dateStr(y))
+          .order('play_date').order('play_time').order('court'),
+        db.from('player_stats').select('*')
+      ]).then(function (res) {
+        if (res[0].error) return dbError(res[0].error, '경기 불러오기');
+        if (res[1].error) return dbError(res[1].error, '참가자 불러오기');
+        state.games = res[0].data.map(fromRow);
+        state.players = {};
+        res[1].data.forEach(function (p) {
+          state.players[p['이름']] = { name: p['이름'], level: p['급수'], gender: p['성별'], month: p['월_참여횟수'], total: p['총_참여횟수'] };
+        });
+        state.loaded = true;
+        if ($('status').textContent.indexOf('DB 테이블') === 0) showStatus('');
+        if (state.me) render();
+      });
+    }
+    var refetchTimer;
+    function refetchSoon() { clearTimeout(refetchTimer); refetchTimer = setTimeout(fetchAll, 150); }
+
+    // 실시간: 누가 바꾸면 다시 불러오기
+    db.channel('badminton')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'games' }, refetchSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'players' }, refetchSoon)
+      .subscribe();
+    // 탭으로 돌아오면 최신화 (모바일에서 연결이 끊겼을 때 대비)
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) refetchSoon(); });
+
+    function busy(form, on) {
+      Array.prototype.forEach.call(form.querySelectorAll('button'), function (b) { b.disabled = on; });
+    }
 
     // ---------- 초기 select 채우기 ----------
     LEVELS.forEach(function (lv) {
@@ -203,80 +262,105 @@
       $('gLevel').insertAdjacentHTML('beforeend', '<option value="' + lv + '">' + lv + ' 이상</option>');
     });
     $('loginLevel').value = 'C';
-    COURTS.forEach(function (c) {
-      $('gCourt').insertAdjacentHTML('beforeend', '<option>' + c + '</option>');
-    });
+    COURTS.forEach(function (c) { $('gCourt').insertAdjacentHTML('beforeend', '<option>' + c + '</option>'); });
     $('gDate').value = todayStr();
     $('gDate').min = todayStr();
 
     // ---------- 로그인 ----------
     $('loginForm').addEventListener('submit', function (e) {
       e.preventDefault();
+      var form = this;
       var name = $('loginName').value.trim();
       var level = $('loginLevel').value;
+      var gender = $('loginGender').value;
       if (!name) { $('loginErr').textContent = '이름을 입력해 주세요.'; return; }
-      state.me = { name: name, level: level };
-      state.players[name] = { name: name, level: level };
-      save(KEY.me, state.me);
-      persist();
-      $('loginErr').textContent = '';
-      render();
+      busy(form, true);
+      db.from('players').upsert({ name: name, level: level, gender: gender, updated_at: new Date().toISOString() })
+        .then(function (r) {
+          busy(form, false);
+          if (r.error) { $('loginErr').textContent = '입장 실패: ' + r.error.message; return; }
+          $('loginErr').textContent = '';
+          state.me = { name: name, level: level, gender: gender };
+          var old = state.players[name] || {};
+          state.players[name] = { name: name, level: level, gender: gender, month: old.month || 0, total: old.total || 0 };
+          saveMe(state.me);
+          render();
+          fetchAll();
+        });
     });
     $('logoutBtn').addEventListener('click', function () {
       state.me = null;
-      save(KEY.me, null);
+      saveMe(null);
       render();
     });
 
     // ---------- 경기 만들기 ----------
     $('gameForm').addEventListener('submit', function (e) {
       e.preventDefault();
+      var form = this;
       var date = $('gDate').value, time = $('gTime').value, court = $('gCourt').value, level = $('gLevel').value;
       var err = $('gameErr');
       if (!date || !time) { err.textContent = '날짜와 시간을 입력해 주세요.'; return; }
       if (new Date(date + 'T' + time) < new Date()) { err.textContent = '지난 시간으로는 만들 수 없어요.'; return; }
-      var clash = state.games.some(function (g) { return g.date === date && g.time === time && g.court === court; });
-      if (clash) { err.textContent = '같은 시간에 이미 ' + court + ' 경기가 있어요.'; return; }
       var join = $('gJoin').checked;
       if (join && !canJoinLevel({ level: level }, state.me.level)) {
         err.textContent = '내 급수로는 이 제한에 참가할 수 없어요. "나도 참가"를 끄거나 제한을 바꿔 주세요.'; return;
       }
       err.textContent = '';
-      state.games.push({
-        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-        date: date, time: time, court: court, level: level,
-        owner: state.me.name,
-        slots: [join ? state.me.name : null, null, null, null]
+      busy(form, true);
+      db.from('games').insert({
+        play_date: date, play_time: time, court: court, level: level || null,
+        owner: state.me.name, s0: join ? state.me.name : null
+      }).then(function (r) {
+        busy(form, false);
+        if (r.error) {
+          err.textContent = r.error.code === '23505'
+            ? '같은 시간에 이미 ' + court + ' 경기가 있어요.'
+            : '경기 만들기 실패: ' + r.error.message;
+          return;
+        }
+        $('gTime').value = '';
+        fetchAll();
       });
-      persist();
-      $('gTime').value = '';
-      render();
     });
 
     // ---------- 경기 카드 동작 (이벤트 위임) ----------
     $('games').addEventListener('click', function (e) {
       var btn = e.target.closest('button[data-act]');
-      if (!btn) return;
+      if (!btn || btn.disabled) return;
       var g = state.games.find(function (x) { return x.id === btn.dataset.id; });
       if (!g) return;
       var me = state.me.name;
       var act = btn.dataset.act;
+      var req;
 
       if (act === 'join') {
         var idx = btn.dataset.slot != null ? +btn.dataset.slot : g.slots.indexOf(null);
-        if (idx < 0 || g.slots[idx] || g.slots.indexOf(me) >= 0) return;
-        if (!canJoinLevel(g, state.me.level)) return;
-        g.slots[idx] = me;
+        if (idx < 0 || g.slots[idx] || g.slots.indexOf(me) >= 0 || !canJoinLevel(g, state.me.level)) return;
+        var col = 's' + idx, patch = {};
+        patch[col] = me;
+        // 비어 있을 때만 잡기 → 동시에 눌러도 한 명만 성공
+        req = db.from('games').update(patch).eq('id', g.id).is(col, null).select('id').then(function (r) {
+          if (r.error) return r.error.code === '23514' ? showStatus('이미 이 경기에 참가 중이에요.') : dbError(r.error, '참가');
+          if (!r.data.length) showStatus('방금 다른 사람이 그 자리를 잡았어요.');
+        });
       } else if (act === 'leave') {
         var i = g.slots.indexOf(me);
-        if (i >= 0) g.slots[i] = null;
+        if (i < 0) return;
+        var c = 's' + i, p = {};
+        p[c] = null;
+        req = db.from('games').update(p).eq('id', g.id).eq(c, me).then(function (r) {
+          if (r.error) dbError(r.error, '나가기');
+        });
       } else if (act === 'delete') {
-        if (g.owner !== me) return;
-        if (!confirm('이 경기를 삭제할까요?')) return;
-        state.games = state.games.filter(function (x) { return x !== g; });
+        if (g.owner !== me || !confirm('이 경기를 삭제할까요?')) return;
+        req = db.from('games').delete().eq('id', g.id).eq('owner', me).then(function (r) {
+          if (r.error) dbError(r.error, '삭제');
+        });
       }
-      persist();
-      render();
+      if (!req) return;
+      btn.disabled = true;
+      req.then(fetchAll);
     });
 
     $('filters').addEventListener('click', function (e) {
@@ -324,23 +408,16 @@
     }
 
     function renderGames() {
-      var now = new Date();
-      // 지난 경기는 자동 정리 (시작 2시간 후)
-      var before = state.games.length;
-      state.games = state.games.filter(function (g) {
-        return new Date(g.date + 'T' + g.time).getTime() + 2 * 3600e3 > now.getTime();
-      });
-      if (state.games.length !== before) persist();
-
-      var me = state.me.name;
-      var list = state.games.slice().sort(function (a, b) {
-        return (a.date + a.time + a.court).localeCompare(b.date + b.time + b.court);
-      }).filter(function (g) {
+      var now = Date.now(), me = state.me.name;
+      // 시작 2시간이 지난 경기는 숨김
+      var list = state.games.filter(function (g) {
+        if (new Date(g.date + 'T' + g.time).getTime() + 2 * 3600e3 <= now) return false;
         if (state.filter === 'open') return filled(g) < 4;
         if (state.filter === 'mine') return g.owner === me || g.slots.indexOf(me) >= 0;
         return true;
       });
       $('games').innerHTML = list.map(gameHtml).join('');
+      $('gamesEmpty').textContent = state.loaded ? '표시할 경기가 없어요. 위에서 경기를 만들어 보세요.' : '불러오는 중…';
       $('gamesEmpty').classList.toggle('hidden', list.length > 0);
     }
 
@@ -351,7 +428,10 @@
       });
       $('playerCount').textContent = names.length + '명';
       $('players').innerHTML = names.length ? names.map(function (n) {
-        return '<span class="chip' + (n === state.me.name ? ' me' : '') + '">' + badge(levelOf(n)) + esc(n) + '</span>';
+        var p = state.players[n];
+        return '<span class="chip' + (n === state.me.name ? ' me' : '') + '">' + badge(levelOf(n)) + esc(n) +
+          (p.gender ? ' <span class="count">' + esc(p.gender) + '</span>' : '') +
+          ' <span class="count" title="이번 달 / 총 참여">' + (p.month || 0) + ' / ' + (p.total || 0) + '회</span></span>';
       }).join('') : '<div class="empty-msg">아직 참가자가 없어요.</div>';
     }
 
@@ -368,15 +448,10 @@
       renderPlayers();
     }
 
-    // 다른 탭에서 바뀌면 동기화
-    window.addEventListener('storage', function (e) {
-      if (e.key === KEY.games) state.games = load(KEY.games, []);
-      else if (e.key === KEY.players) state.players = load(KEY.players, {});
-      else return;
-      if (state.me) render();
-    });
-
     render();
+    fetchAll();
+    // 화면에 띄워둔 채로 시간이 지나도 지난 경기가 사라지게
+    setInterval(function () { if (state.me) renderGames(); }, 60e3);
   })();
   </script>
 </body>
