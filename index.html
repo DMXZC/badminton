@@ -71,6 +71,9 @@
     .game.st-waiting { background:#f1f8f4; border-color:#b9dcc9; }
     .game.st-playing { background:#f2f6fd; border-color:#b7cdf3; }
     .game.st-finished { opacity:.6; }
+    .court { display:flex; align-items:center; gap:6px; margin:0 auto 0 0; font-size:13px; color:var(--ink); white-space:nowrap; }
+    .court select { width:auto; padding:6px 8px; font-size:14px; }
+    .actions { align-items:center; flex-wrap:wrap; }
   </style>
 </head>
 
@@ -139,7 +142,7 @@
     </section>
 
     <section class="card">
-      <h2>참가자 <span class="count"><span id="playerCount"></span> · 이번 달 / 총 참여</span></h2>
+      <h2>참가자 <span class="count" id="playerCount"></span></h2>
       <div class="players" id="players"></div>
     </section>
   </main>
@@ -203,7 +206,7 @@
       return {
         id: r.id, no: r.room_no, level: r.level || '', owner: r.owner,
         status: r.status || 'open', startedAt: r.started_at, endedAt: r.ended_at,
-        createdAt: r.created_at, slots: [r.s0, r.s1, r.s2, r.s3]
+        createdAt: r.created_at, court: r.court_no || null, slots: [r.s0, r.s1, r.s2, r.s3]
       };
     }
 
@@ -234,7 +237,7 @@
       var since = new Date(Date.now() - DONE_SHOW_MS).toISOString();
       return Promise.all([
         db.from('games').select('*').or('status.neq.finished,ended_at.gte.' + since).order('created_at'),
-        db.from('player_stats').select('*')
+        db.from('players').select('name, level, gender')
       ]).then(function (res) {
         if (res[0].error) return dbError(res[0].error, '경기 불러오기');
         if (res[1].error) return dbError(res[1].error, '참가자 불러오기');
@@ -242,9 +245,7 @@
         else if ($('status').textContent === SCHEMA_MSG) showStatus('');
         state.games = res[0].data.map(fromRow);
         state.players = {};
-        res[1].data.forEach(function (p) {
-          state.players[p['이름']] = { name: p['이름'], level: p['급수'], gender: p['성별'], month: p['월_참여횟수'], total: p['총_참여횟수'] };
-        });
+        res[1].data.forEach(function (p) { state.players[p.name] = p; });
         state.loaded = true;
         if (state.me) render();
       });
@@ -294,8 +295,7 @@
           if (r.error) { $('loginErr').textContent = '입장 실패: ' + r.error.message; return; }
           $('loginErr').textContent = '';
           state.me = { name: name, level: level, gender: gender };
-          var old = state.players[name] || {};
-          state.players[name] = { name: name, level: level, gender: gender, month: old.month || 0, total: old.total || 0 };
+          state.players[name] = { name: name, level: level, gender: gender };
           saveMe(state.me);
           render();
           fetchAll();
@@ -334,7 +334,7 @@
       confirm:   { from: 'open',    to: 'waiting',  label: '대기 확정' },
       unconfirm: { from: 'waiting', to: 'open',     label: '확정 취소' },
       start:     { from: 'waiting', to: 'playing',  label: '경기 시작' },
-      finish:    { from: 'playing', to: 'finished', label: '경기 종료', ask: '경기를 종료할까요? 4명 모두 참여 1회로 기록돼요.' }
+      finish:    { from: 'playing', to: 'finished', label: '경기 종료', ask: '경기를 종료할까요?' }
     };
 
     $('games').addEventListener('click', function (e) {
@@ -376,6 +376,22 @@
       if (!req) return;
       btn.disabled = true;
       req.then(fetchAll);
+    });
+
+    // 콕 대기 코트 변경
+    $('games').addEventListener('change', function (e) {
+      var sel = e.target.closest('select[data-court]');
+      if (!sel) return;
+      var g = state.games.find(function (x) { return x.id === sel.dataset.id; });
+      if (!g || !isMember(g, state.me.name)) return;
+      var v = sel.value ? +sel.value : null;
+      g.court = v;
+      sel.blur();
+      rpc('set_game_court', { p_id: g.id, p_name: state.me.name, p_court: v }).then(function (r) {
+        if (r.error) dbError(r.error, '코트 변경');
+        else if (!r.data) showStatus('이 방의 참가자만 코트를 바꿀 수 있어요.');
+        fetchAll();
+      });
     });
 
     $('filters').addEventListener('click', function (e) {
@@ -432,6 +448,13 @@
       }
       if (g.owner === me && (g.status === 'open' || g.status === 'waiting')) actions += btnHtml(g, 'delete', '삭제', 'danger');
 
+      // 왼쪽 아래: 콕 대기 코트 (1~9)
+      var opts = '<option value="">-</option>';
+      for (var c = 1; c <= 9; c++) opts += '<option value="' + c + '"' + (g.court === c ? ' selected' : '') + '>' + c + '</option>';
+      var court = '<label class="court"><select data-court data-id="' + g.id + '"' +
+        (member && g.status !== 'finished' ? '' : ' disabled') + ' aria-label="콕 대기 코트">' + opts + '</select>' +
+        '<span>콕 대기 코트</span></label>';
+
       return '<div class="game st-' + g.status + '">' +
         '<div class="top"><span>' + esc(g.no != null ? g.no + '번 방' : '방') + '</span>' + tag + '</div>' +
         '<div class="meta"><span>🎯 ' + (g.level ? esc(g.level) + ' 이상' : '급수 무관') + '</span>' +
@@ -439,11 +462,22 @@
         '<div class="slots">' + slotHtml(g, 0) + slotHtml(g, 1) +
           '<div class="vs">VS</div>' + slotHtml(g, 2) + slotHtml(g, 3) + '</div>' +
         (info ? '<div class="meta">' + info + '</div>' : '') +
-        (actions ? '<div class="actions">' + actions + '</div>' : '') +
+        '<div class="actions">' + court + actions + '</div>' +
       '</div>';
     }
 
+    // 코트 선택 박스를 조작하는 중에는 다시 그리지 않음 (선택값이 사라지지 않게)
+    var pendingRender = false;
+    function editingCourt() {
+      var a = document.activeElement;
+      return a && a.matches && a.matches('#games select[data-court]');
+    }
+    $('games').addEventListener('focusout', function () {
+      setTimeout(function () { if (pendingRender && !editingCourt()) { pendingRender = false; renderGames(); } }, 0);
+    });
+
     function renderGames() {
+      if (editingCourt()) { pendingRender = true; return; }
       var now = Date.now(), me = state.me.name;
       var list = state.games.filter(function (g) {
         if (g.status === 'finished' && (!g.endedAt || new Date(g.endedAt).getTime() + DONE_SHOW_MS <= now)) return false;
@@ -467,8 +501,7 @@
       $('players').innerHTML = names.length ? names.map(function (n) {
         var p = state.players[n];
         return '<span class="chip' + (n === state.me.name ? ' me' : '') + '">' + badge(levelOf(n)) + esc(n) +
-          (p.gender ? ' <span class="count">' + esc(p.gender) + '</span>' : '') +
-          ' <span class="count" title="이번 달 / 총 참여">' + (p.month || 0) + ' / ' + (p.total || 0) + '회</span></span>';
+          (p.gender ? ' <span class="count">' + esc(p.gender) + '</span>' : '') + '</span>';
       }).join('') : '<div class="empty-msg">아직 참가자가 없어요.</div>';
     }
 

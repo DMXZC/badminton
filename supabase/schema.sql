@@ -160,3 +160,26 @@ grant execute on function public.delete_game(uuid, text)     to anon, authentica
 
 -- API가 새 함수를 바로 인식하도록
 notify pgrst, 'reload schema';
+
+-- 콕 대기 코트 (1~9). 방 참가자나 만든 사람만 바꿀 수 있음
+alter table public.games add column if not exists court_no smallint;
+alter table public.games drop constraint if exists games_court_no_check;
+alter table public.games add constraint games_court_no_check check (court_no between 1 and 9);
+
+create or replace function public.set_game_court(p_id uuid, p_name text, p_court int)
+returns boolean language plpgsql as $$
+declare n int;
+begin
+  if p_court is not null and p_court not between 1 and 9 then
+    raise exception 'invalid court %', p_court;
+  end if;
+  update public.games set court_no = p_court
+   where id = p_id
+     and p_name in (owner, coalesce(s0,''), coalesce(s1,''), coalesce(s2,''), coalesce(s3,''));
+  get diagnostics n = row_count;
+  return n > 0;
+end $$;
+
+grant execute on function public.set_game_court(uuid, text, int) to anon, authenticated;
+
+notify pgrst, 'reload schema';
