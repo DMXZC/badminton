@@ -89,3 +89,38 @@ begin
     alter publication supabase_realtime add table public.players;
   end if;
 end $$;
+
+-- 참가/나가기/삭제를 함수로 처리 (모두 POST 요청이라 PATCH/DELETE를 막는 네트워크에서도 동작)
+create or replace function public.join_game(p_id uuid, p_slot int, p_name text)
+returns boolean language plpgsql as $$
+declare n int;
+begin
+  if p_slot is null or p_slot not between 0 and 3 then
+    raise exception 'invalid slot %', p_slot;
+  end if;
+  -- 비어 있을 때만 잡기 → 동시에 눌러도 한 명만 성공
+  execute format('update public.games set s%s = $1 where id = $2 and s%s is null', p_slot, p_slot)
+    using p_name, p_id;
+  get diagnostics n = row_count;
+  return n > 0;
+end $$;
+
+create or replace function public.leave_game(p_id uuid, p_name text)
+returns void language sql as $$
+  update public.games
+     set s0 = nullif(s0, p_name), s1 = nullif(s1, p_name),
+         s2 = nullif(s2, p_name), s3 = nullif(s3, p_name)
+   where id = p_id;
+$$;
+
+create or replace function public.delete_game(p_id uuid, p_name text)
+returns void language sql as $$
+  delete from public.games where id = p_id and owner = p_name;
+$$;
+
+grant execute on function public.join_game(uuid, int, text)  to anon, authenticated;
+grant execute on function public.leave_game(uuid, text)      to anon, authenticated;
+grant execute on function public.delete_game(uuid, text)     to anon, authenticated;
+
+-- API가 새 함수를 바로 인식하도록
+notify pgrst, 'reload schema';
